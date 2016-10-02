@@ -1,4 +1,4 @@
-# Copyright 1999-2015 Gentoo Foundation
+# Copyright 1999-2016 Gentoo Foundation
 # Distributed under the terms of the GNU General Public License v2
 # $Id$
 
@@ -126,14 +126,17 @@ src_install() {
 		|| die "Could not install menus"
 
 	rm "${ED}usr/share/applications/"*"Uninstall CrossOver Linux.desktop" \
-		"${ED}opt/cxoffice/support/desktopdata/cxoffice-0/cxmenu/Launchers/StartMenu/Uninstall CrossOver Linux.desktop"
+		"${ED}opt/cxoffice/support/desktopdata/cxoffice-0/cxmenu/Launchers/StartMenu/Uninstall CrossOver Linux.desktop" \
+		|| die "Could not remove uninstall menus"
 	sed -i \
 		-e "s:\"${ED}\".::" \
 		-e "s:${ED}::" \
-		"${ED}/opt/cxoffice/lib/perl/CXMenuXDG.pm"
+		"${ED}/opt/cxoffice/lib/perl/CXMenuXDG.pm" \
+		|| die "Could not fix paths in ${ED}/opt/cxoffice/lib/perl/CXMenuXDG.pm"
 	sed -i -e "s:${ED}:/:" \
 		"${ED}/opt/cxoffice/support/desktopdata/cxoffice-0/cxmenu/Launchers/StartMenu/"*.desktop \
-		"${ED}usr/share/applications/"*"CrossOver.desktop"
+		"${ED}usr/share/applications/"*"CrossOver.desktop" \
+		|| die "Could not fix paths of *.desktop files"
 }
 
 pkg_postinst() {

@@ -7,11 +7,10 @@ EAPI=6
 : ${CMAKE_MAKEFILE_GENERATOR:=ninja}
 # (needed due to lib32 find_library fix)
 CMAKE_MIN_VERSION=3.6.1-r1
-DISTUTILS_OPTIONAL=1
 PYTHON_COMPAT=( python2_7 )
 
-inherit check-reqs cmake-utils distutils-r1 flag-o-matic git-r3 \
-	multilib-minimal pax-utils toolchain-funcs
+inherit check-reqs cmake-utils flag-o-matic git-r3 \
+	multilib-minimal pax-utils python-any-r1 toolchain-funcs
 
 DESCRIPTION="Low Level Virtual Machine"
 HOMEPAGE="http://llvm.org/"
@@ -19,13 +18,17 @@ SRC_URI=""
 EGIT_REPO_URI="http://llvm.org/git/llvm.git
 	https://github.com/llvm-mirror/llvm.git"
 
+# Keep in sync with CMakeLists.txt
+ALL_LLVM_TARGETS=( AArch64 AMDGPU ARM BPF Hexagon Lanai Mips MSP430
+	NVPTX PowerPC Sparc SystemZ X86 XCore )
+ALL_LLVM_TARGETS=( "${ALL_LLVM_TARGETS[@]/#/llvm_targets_}" )
+
 LICENSE="UoI-NCSA"
 SLOT="0/${PV%.*}"
 KEYWORDS=""
 IUSE="debug +doc gold libedit +libffi multitarget ncurses ocaml test
-	video_cards_radeon elibc_musl kernel_Darwin"
+	elibc_musl kernel_Darwin ${ALL_LLVM_TARGETS[*]}"
 
-# python is needed for llvm-lit (which is installed)
 RDEPEND="
 	sys-libs/zlib:0=
 	gold? ( >=sys-devel/binutils-2.22:*[cxx] )
@@ -34,9 +37,7 @@ RDEPEND="
 	ncurses? ( >=sys-libs/ncurses-5.9-r3:0=[${MULTILIB_USEDEP}] )
 	ocaml? (
 		>=dev-lang/ocaml-4.00.0:0=
-		dev-ml/findlib
-		dev-ml/ocaml-ctypes )
-	${PYTHON_DEPS}"
+		dev-ml/ocaml-ctypes:= )"
 # configparser-3.2 breaks the build (3.3 or none at all are fine)
 DEPEND="${RDEPEND}
 	dev-lang/perl
@@ -48,10 +49,20 @@ DEPEND="${RDEPEND}
 	doc? ( dev-python/sphinx )
 	gold? ( sys-libs/binutils-libs )
 	libffi? ( virtual/pkgconfig )
-	ocaml? ( test? ( dev-ml/ounit ) )
-	!!<dev-python/configparser-3.3.0.2"
+	ocaml? ( dev-ml/findlib
+		test? ( dev-ml/ounit ) )
+	test? ( $(python_gen_any_dep 'dev-python/lit[${PYTHON_USEDEP}]') )
+	!!<dev-python/configparser-3.3.0.2
+	${PYTHON_DEPS}"
 
-REQUIRED_USE="${PYTHON_REQUIRED_USE}"
+REQUIRED_USE="${PYTHON_REQUIRED_USE}
+	|| ( ${ALL_LLVM_TARGETS[*]} )
+	multitarget? ( ${ALL_LLVM_TARGETS[*]} )"
+
+python_check_deps() {
+	! use test \
+		|| has_version "dev-python/lit[${PYTHON_USEDEP}]"
+}
 
 pkg_pretend() {
 	# in megs
@@ -91,13 +102,6 @@ src_prepare() {
 	# Python is needed to run tests using lit
 	python_setup
 
-	# Fix libdir for ocaml bindings install, bug #559134
-	eapply "${FILESDIR}"/9999/0001-cmake-Install-OCaml-modules-into-correct-package-loc.patch
-
-	# Make it possible to override Sphinx HTML install dirs
-	# https://llvm.org/bugs/show_bug.cgi?id=23780
-	eapply "${FILESDIR}"/9999/0003-cmake-Support-overriding-Sphinx-HTML-doc-install-dir.patch
-
 	# Prevent race conditions with parallel Sphinx runs
 	# https://llvm.org/bugs/show_bug.cgi?id=23781
 	eapply "${FILESDIR}"/9999/0004-cmake-Add-an-ordering-dep-between-HTML-man-Sphinx-ta.patch
@@ -113,11 +117,6 @@ src_prepare() {
 	# https://bugs.gentoo.org/show_bug.cgi?id=578392
 	eapply "${FILESDIR}"/9999/0008-cmake-Restore-SOVERSIONs-on-shared-libraries.patch
 
-	# Fix lit tests to find installed llvm-lit correctly
-	eapply "${FILESDIR}"/9999/0009-cmake-Use-system-llvm-lit-when-lit.py-does-not-exist.patch
-	# Install lit as llvm-lit (as expected by cmake)
-	eapply "${FILESDIR}"/9999/0010-lit-setup.py-Install-as-llvm-lit-as-cmake-expects-it.patch
-
 	# support building llvm against musl-libc
 	use elibc_musl && eapply "${FILESDIR}"/9999/musl-fixes.patch
 
@@ -132,14 +131,6 @@ src_prepare() {
 }
 
 multilib_src_configure() {
-	local targets
-	if use multitarget; then
-		targets=all
-	else
-		targets='host;BPF'
-		use video_cards_radeon && targets+=';AMDGPU'
-	fi
-
 	local ffi_cflags ffi_ldflags
 	if use libffi; then
 		ffi_cflags=$(pkg-config --cflags-only-I libffi)
@@ -151,7 +142,7 @@ multilib_src_configure() {
 		-DLLVM_LIBDIR_SUFFIX=${libdir#lib}
 
 		-DBUILD_SHARED_LIBS=ON
-		-DLLVM_TARGETS_TO_BUILD="${targets}"
+		-DLLVM_TARGETS_TO_BUILD="${LLVM_TARGETS// /;}"
 		-DLLVM_BUILD_TESTS=$(usex test)
 
 		-DLLVM_ENABLE_FFI=$(usex libffi)
@@ -183,15 +174,25 @@ multilib_src_configure() {
 		)
 #	fi
 
+	use test && mycmakeargs+=(
+		-DLIT_COMMAND="${EPREFIX}/usr/bin/lit"
+	)
+
 	if multilib_is_native_abi; then
 		mycmakeargs+=(
 			-DLLVM_BUILD_DOCS=$(usex doc)
+			# note: this is used only when OCaml is enabled, so we can
+			# set it to 'yes' even without OCaml around
+			# note 2: disable for now since it installs
+			# to /usr/docs/ocaml/html/html which is kinda wrong
+			# bother to fix it when somebody starts to care
+			-DLLVM_ENABLE_OCAMLDOC=OFF
 			-DLLVM_ENABLE_SPHINX=$(usex doc)
 			-DLLVM_ENABLE_DOXYGEN=OFF
 			-DLLVM_INSTALL_UTILS=ON
 		)
 		use doc && mycmakeargs+=(
-			-DLLVM_INSTALL_HTML="${EPREFIX}/usr/share/doc/${PF}/html"
+			-DLLVM_INSTALL_SPHINX_HTML_DIR="${EPREFIX}/usr/share/doc/${PF}/html"
 			-DSPHINX_WARNINGS_AS_ERRORS=OFF
 		)
 		use gold && mycmakeargs+=(
@@ -213,8 +214,6 @@ multilib_src_configure() {
 
 multilib_src_compile() {
 	cmake-utils_src_compile
-	# TODO: not sure why this target is not correctly called
-	multilib_is_native_abi && use doc && use ocaml && cmake-utils_src_make docs/ocaml_doc
 
 	pax-mark m "${BUILD_DIR}"/bin/llvm-rtdyld
 	pax-mark m "${BUILD_DIR}"/bin/lli
@@ -225,10 +224,6 @@ multilib_src_compile() {
 		pax-mark m "${BUILD_DIR}"/unittests/ExecutionEngine/MCJIT/MCJITTests
 		pax-mark m "${BUILD_DIR}"/unittests/Support/SupportTests
 	fi
-
-	# Run setup.py for lit
-	cd "${S}"/utils/lit || die
-	distutils-r1_src_compile
 }
 
 multilib_src_test() {
@@ -247,10 +242,6 @@ src_install() {
 	)
 
 	multilib-minimal_src_install
-
-	# Install lit
-	cd "${S}"/utils/lit || die
-	distutils-r1_src_install
 }
 
 multilib_src_install() {
